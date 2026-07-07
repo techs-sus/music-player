@@ -1,54 +1,105 @@
 {
-  description = "a flake which contains a devshell, package, and formatter";
+  description = "build the music player";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
+    crane.url = "github:ipetkov/crane";
     flake-utils.url = "github:numtide/flake-utils";
-
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
-      inputs = {
-        nixpkgs.follows = "nixpkgs";
-      };
-    };
   };
 
   outputs =
     {
+      self,
       nixpkgs,
-      rust-overlay,
+      crane,
       flake-utils,
       ...
-    }@inputs:
+    }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        overlays = [ (import rust-overlay) ];
-        pkgs = import nixpkgs {
-          inherit system overlays;
-        };
-      in
-      {
-        devShells.default = pkgs.mkShell {
-          buildInputs = [
-            (pkgs.rust-bin.stable.latest.default.override {
-              extensions = [
-                "rust-analyzer"
-                "rust-src"
-              ];
-            })
+        pkgs = nixpkgs.legacyPackages.${system};
+
+        craneLib = crane.mkLib pkgs;
+
+        commonArgs = {
+          pname = "music-player";
+          version = "0.1.0";
+
+          src = craneLib.cleanCargoSource ./.;
+          strictDeps = true;
+
+          buildFeatures = [ ];
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            makeWrapper
           ];
 
-          packages = [ ];
+          buildInputs = with pkgs; [
+            libxcb
+            libxkbcommon
+            wayland
+            vulkan-loader
+          ];
+        };
 
-          shellHook = "";
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+        ldLibraryPath = pkgs.lib.makeLibraryPath commonArgs.buildInputs;
+
+        finalPackage = craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+
+            postInstall = ''
+              for binary in $out/bin/*; do
+                wrapProgram "$binary" --prefix LD_LIBRARY_PATH : ${ldLibraryPath}
+              done
+            '';
+
+            meta = {
+              description = "lightweight music player";
+              homepage = "https://github.com/techs-sus/music";
+              license = pkgs.lib.licenses.asl20;
+              maintainers = [
+                {
+                  name = "techs-sus";
+                  github = "techs-sus";
+                  githubId = 92276908;
+                }
+              ];
+              platforms = pkgs.lib.platforms.unix;
+              mainProgram = "music-player";
+            };
+          }
+        );
+      in
+      {
+        checks = {
+          music-player = finalPackage;
+        };
+
+        packages.default = finalPackage;
+
+        apps.default = flake-utils.lib.mkApp {
+          drv = finalPackage;
+        };
+
+        devShells.default = craneLib.devShell {
+          checks = self.checks.${system};
+
+          packages = with pkgs; [
+            rust-analyzer
+          ];
+
+          shellHook = ''
+            export LD_LIBRARY_PATH="${ldLibraryPath}:$LD_LIBRARY_PATH"
+          '';
         };
 
         formatter = pkgs.nixfmt-tree;
-        packages.default = pkgs.callPackage ./. {
-          inherit inputs;
-          inherit pkgs;
-        };
       }
     );
 }
