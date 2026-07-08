@@ -33,6 +33,7 @@
 
           nativeBuildInputs = with pkgs; [
             pkg-config
+            fontconfig
             makeWrapper
           ];
 
@@ -61,7 +62,7 @@
 
             meta = {
               description = "lightweight music player";
-              homepage = "https://github.com/techs-sus/music";
+              homepage = "https://github.com/techs-sus/music-player";
               license = pkgs.lib.licenses.asl20;
               maintainers = [
                 {
