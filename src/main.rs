@@ -46,8 +46,6 @@ impl Render for Viewport {
 			.justify_start()
 			.items_start()
 			.shadow_lg()
-			.border_1()
-			.border_color(rgb(0x0000ff))
 			.child(sidebar)
 			.child(
 				div()
