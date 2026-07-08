@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 gpui = { version = "*" }
+sqlx = { version = "0.9", features = [ "runtime-tokio", "tls-rustls-ring-webpki", "sqlite" ] }
 # gpui_platform = { version = "*", features = ["font-kit", "wayland", "x11"] }
