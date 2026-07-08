@@ -45,7 +45,7 @@ impl Render for HelloWorld {
 }
 
 fn main() {
-	Application::new().run(|cx: &mut App| {
+	gpui_platform::application().run(|cx: &mut App| {
 		// let bounds = Bounds::centered(None, size(px(500.), px(500.0)), cx);
 		cx.open_window(
 			WindowOptions {
