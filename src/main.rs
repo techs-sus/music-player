@@ -1,9 +1,9 @@
 mod theme;
+use anyhow::Context as _;
+use directories::ProjectDirs;
 use theme::*;
 
-use gpui::{
-	App, Context, Entity, Length, MouseButton, Window, WindowOptions, div, prelude::*, rgb,
-};
+use gpui::{App, Context, Entity, Length, MouseButton, Window, WindowOptions, div, prelude::*};
 use std::sync::Arc;
 
 enum Page {
@@ -70,9 +70,37 @@ impl Render for Viewport {
 	}
 }
 
+fn get_theme(dirs: Option<ProjectDirs>) -> anyhow::Result<Theme> {
+	let theme_yaml_path = dirs
+		.context("no ProjectDirs found")?
+		.config_dir()
+		.join("theme.yaml");
+
+	Ok(
+		serde_yaml_ng::from_reader::<_, TintedTheme>(
+			std::fs::File::open(theme_yaml_path).context("failed opening theme.yaml for reading")?,
+		)
+		.context("failed decoding theme.yaml")?
+		.palette,
+	)
+}
+
 fn main() {
+	let dirs = ProjectDirs::from("com", "techs-sus", "Music Player");
+
+	if let Some(ref dirs) = dirs {
+		// create config directory so that users can find it and insert a theme.yaml into it
+		let _ = std::fs::create_dir(dirs.config_dir());
+	};
+
+	let theme = get_theme(dirs).unwrap_or_else(|err| {
+		eprintln!("failed loading theme from config path: {err}");
+
+		DEFAULT_BASE16_THEME
+	});
+
 	gpui_platform::application().run(|cx: &mut App| {
-		cx.set_global::<GlobalTheme>(GlobalTheme(Arc::new(DEFAULT_BASE16_THEME)));
+		cx.set_global::<GlobalTheme>(GlobalTheme(Arc::new(theme)));
 
 		cx.open_window(
 			WindowOptions {

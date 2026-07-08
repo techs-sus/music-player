@@ -11,6 +11,11 @@ gpui_platform = { git = "https://github.com/zed-industries/zed.git", features = 
 	"x11",
 ] }
 anyhow = "1.0"
+directories = "6.0"
+
+serde         = "1.0"
+serde_yaml_ng = "0.10"
+
 # sqlx = { version = "0.9", features = [
 # 	"runtime-tokio",
 # 	"tls-rustls-ring-webpki",
