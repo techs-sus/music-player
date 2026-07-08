@@ -1,61 +1,91 @@
-// mod database;
+mod theme;
+use theme::*;
 
 use gpui::{
-	App, Application, Bounds, Context, Menu, MouseButton, SharedString, Window, WindowBounds,
-	WindowOptions, div, prelude::*, px, rgb, size,
+	App, Context, Entity, Length, MouseButton, Window, WindowOptions, div, prelude::*, rgb,
 };
+use std::sync::Arc;
 
-struct HelloWorld {
-	text: SharedString,
+enum Page {
+	Playlists,
+	FullscreenPlayer,
 }
 
-impl Render for HelloWorld {
-	fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+struct Sidebar {
+	page: Entity<Page>,
+}
+
+impl Render for Sidebar {
+	fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+		let theme = cx.theme();
+
+		div()
+			.bg(theme.base01)
+			.w(Length::Definite(gpui::DefiniteLength::Fraction(0.1)))
+			.h_full()
+	}
+}
+
+struct Viewport {
+	page: Entity<Page>,
+}
+
+impl Render for Viewport {
+	fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+		let sidebar = cx.new(|_| Sidebar {
+			page: self.page.clone(),
+		});
+		let theme = cx.theme();
+
 		div()
 			.flex()
-			.flex_col()
+			.flex_row()
 			.gap_3()
-			.bg(rgb(0x505050))
-			.size(window.viewport_size().width)
-			.justify_center()
-			.items_center()
+			.bg(theme.base00)
+			.size_full()
+			.justify_start()
+			.items_start()
 			.shadow_lg()
 			.border_1()
 			.border_color(rgb(0x0000ff))
-			.text_xl()
-			.text_color(rgb(0xffffff))
-			.on_any_mouse_down(|event, window, app| {
-				if matches!(event.button, MouseButton::Left) {
-					app.quit();
-				};
-			})
-			.child(format!("Hello, {}!", &self.text))
+			.child(sidebar)
 			.child(
 				div()
 					.flex()
-					.gap_2()
-					.child(div().size_8().bg(gpui::red()))
-					.child(div().size_8().bg(gpui::green()))
-					.child(div().size_8().bg(gpui::blue()))
-					.child(div().size_8().bg(gpui::yellow()))
-					.child(div().size_8().bg(gpui::black()))
-					.child(div().size_8().bg(gpui::white())),
+					.justify_center()
+					.items_center()
+					.size_auto()
+					.text_xl()
+					.m_4()
+					.p_2()
+					.text_color(theme.base05)
+					.on_any_mouse_down(|event, _window, app| {
+						if matches!(event.button, MouseButton::Left) {
+							app.quit();
+						};
+					})
+					.bg(theme.base02)
+					.border_color(theme.base05)
+					.rounded_md()
+					.child("Quit"),
 			)
 	}
 }
 
 fn main() {
 	gpui_platform::application().run(|cx: &mut App| {
-		// let bounds = Bounds::centered(None, size(px(500.), px(500.0)), cx);
+		cx.set_global::<GlobalTheme>(GlobalTheme(Arc::new(DEFAULT_BASE16_THEME)));
+
 		cx.open_window(
 			WindowOptions {
-				// window_bounds: Some(WindowBounds::Windowed(bounds)),
+				focus: true,
+				app_id: Some("com.github.techs-sus.music-player".to_string()),
 				..Default::default()
 			},
 			|_, cx| {
-				cx.new(|_| HelloWorld {
-					text: "World".into(),
-				})
+				let page = cx.new(|_| Page::Playlists);
+
+				cx.new(|_| Viewport { page })
 			},
 		)
 		.unwrap();
