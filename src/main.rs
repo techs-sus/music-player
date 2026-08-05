@@ -63,8 +63,8 @@ impl Playlist {
 
 		let folder = tokio::fs::canonicalize(folder).await?;
 
-		tokio::fs::create_dir(folder.join("audio")).await?;
-		tokio::fs::create_dir(folder.join("thumbnail")).await?;
+		let _ = tokio::fs::create_dir(folder.join("audio")).await;
+		let _ = tokio::fs::create_dir(folder.join("thumbnail")).await;
 
 		let db = Connection::open(&path)?;
 
@@ -94,12 +94,8 @@ impl Playlist {
     				CREATE TABLE IF NOT EXISTS playlist_metadata(
                singleton_key integer primary key check (singleton_key = 1),
 
-               -- youtube_playlist_name text,
-               youtube_playlist_id text,
-            );
-						CREATE TEMP TABLE IF NOT EXISTS incoming_tracks(
-							youtube_video_id text NOT NULL PRIMARY KEY,
-						);
+               youtube_playlist_id text
+            );	
     				CREATE TABLE IF NOT EXISTS tracks(
    				    id integer PRIMARY KEY,
     					title text NOT NULL,
@@ -108,7 +104,7 @@ impl Playlist {
               thumbnail_path text,
 
               youtube_video_id text NOT NULL UNIQUE,
-							position integer NOT NULL UNIQUE,
+							position integer NOT NULL UNIQUE
     				);
     				COMMIT;
 				",
@@ -129,6 +125,13 @@ impl Playlist {
 				return Err(Error::NotOurMusicDatabase(None));
 			}
 		}
+
+		db.execute(
+			"CREATE TEMP TABLE IF NOT EXISTS incoming_tracks(
+				youtube_video_id text NOT NULL PRIMARY KEY
+			);",
+			(),
+		)?;
 
 		Ok(Self {
 			db,
@@ -263,7 +266,7 @@ impl Playlist {
 			.prepare(
 				"SELECT s.youtube_video_id
 				FROM tracks s
-				JOIN incoming_tracks t ON t.id = s.youtube_video_id;
+				JOIN incoming_tracks t ON t.youtube_video_id = s.youtube_video_id;
 			",
 			)?
 			.query_map((), |row| row.get::<_, String>(0))?
