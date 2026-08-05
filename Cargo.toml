@@ -4,20 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed.git" }
-gpui_platform = { git = "https://github.com/zed-industries/zed.git", features = [
-	"font-kit", # allows text to be rendered on macos
-	"wayland",
-	"x11",
+# serde         = "1.0"
+# serde_yaml_ng = "0.10"
+kopuz-server = { git = "https://github.com/techs-sus/kopuz" }
+mime         = "0.3.17"
+mime2ext     = "0.1.54"
+reqwest      = "0.13.4"
+rusqlite     = "0.31"
+thiserror    = "2.0.19"
+
+tokio = { version = "1.53.1", default-features = false, features = [
+	"rt",
+	"rt-multi-thread",
+	"macros",
 ] }
-anyhow = "1.0"
-directories = "6.0"
-
-serde         = "1.0"
-serde_yaml_ng = "0.10"
-
-# sqlx = { version = "0.9", features = [
-# 	"runtime-tokio",
-# 	"tls-rustls-ring-webpki",
-# 	"sqlite",
-# ] }

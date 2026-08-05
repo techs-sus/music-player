@@ -42,6 +42,7 @@
             libxkbcommon
             wayland
             vulkan-loader
+            openssl
           ];
         };
 
