@@ -345,7 +345,7 @@ impl Playlist {
 
 	fn write_playlist_to_m3a(&self) -> Result<(), Error> {
 		struct RegularTrack {
-			path: PathBuf,
+			path: String,
 			title: String,
 		}
 
@@ -355,7 +355,7 @@ impl Playlist {
 
 		let tracks = prepared.query_map((), |row| {
 			Ok(RegularTrack {
-				path: self.folder.join(row.get::<_, String>(0)?),
+				path: row.get::<_, String>(0)?,
 				title: row.get::<_, String>(1)?,
 			})
 		})?;
@@ -368,7 +368,8 @@ impl Playlist {
 
 		for track in tracks.into_iter().filter_map(Result::ok) {
 			write!(buf, "#EXTINF:0,{}\n", track.title)?;
-			write!(buf, "{}\n", track.path.to_string_lossy())?;
+			// this should work because db should only store relative paths
+			write!(buf, "{}\n", track.path)?;
 		}
 
 		buf.flush()?;
