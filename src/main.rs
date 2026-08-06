@@ -7,10 +7,11 @@ use std::{
 use clap::Parser;
 use reqwest::{
 	Client,
-	header::{CONTENT_TYPE, USER_AGENT},
+	header::{CONTENT_TYPE, RANGE, REFERER, USER_AGENT},
 };
 use rusqlite::Connection;
-use server::ytmusic::{YouTubeMusicClient, player::AudioFormat};
+use server::ytmusic::YouTubeMusicClient;
+use tracing::info;
 
 #[derive(thiserror::Error, Debug)]
 enum Error {
@@ -164,6 +165,7 @@ impl Playlist {
 			.reqwest_client
 			.get(cover_url)
 			.header(USER_AGENT, user_agent)
+			.header(REFERER, "https://music.youtube.com/")
 			.send()
 			.await?;
 
@@ -194,6 +196,7 @@ impl Playlist {
 
 	/// Downloads the track and gives back the audio_base_path with the proper extension and the user
 	/// agent used to download it.
+	#[tracing::instrument(skip(self))]
 	async fn download_single_track(&self, video_id: &str) -> Result<(PathBuf, String), Error> {
 		let stream_info = self
 			.client
@@ -214,12 +217,20 @@ impl Playlist {
 			_ => {
 				let response = self
 					.reqwest_client
-					.get(stream_info.url)
+					.get(&stream_info.url)
 					.header(USER_AGENT, &stream_info.user_agent)
+					.header(REFERER, "https://music.youtube.com/")
+					// this header is REQUIRED for near instant downloads
+					.header(RANGE, "bytes=0-")
 					.send()
 					.await?;
 
+				let start = std::time::Instant::now();
 				tokio::fs::write(&audio_path, response.bytes().await?).await?;
+				info!(
+					"downloaded track in {:#?}",
+					std::time::Instant::now() - start
+				);
 			}
 		};
 
@@ -296,7 +307,13 @@ impl Playlist {
 
 			if already_existing_track_ids.contains(&*youtube_video_id) {
 				// update track position as it may have changed in the upstream
-				ensure_track_has_updated_position.execute((playlist_ordered_position, youtube_video_id))?;
+				info!(
+					"track id {} already exists, not fetching from youtube",
+					&youtube_video_id
+				);
+
+				ensure_track_has_updated_position
+					.execute((playlist_ordered_position, &youtube_video_id))?;
 				continue;
 			}
 
@@ -410,7 +427,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-	// let playlist_id = "OLAK5uy_nFiS1SeXBnJII-kBfpg7kGRB0JeE_tot8";
+	tracing_subscriber::fmt()
+		.compact()
+		.with_target(false)
+		.without_time()
+		.with_level(true)
+		.init();
 	let args = Args::parse();
 	match args.command {
 		Command::Init {
@@ -425,7 +447,7 @@ async fn main() {
 				.set_upstream(&youtube_upstream_playlist)
 				.expect("failed setting playlist upstream");
 
-			println!("successfully set playlist upstream to {youtube_upstream_playlist}");
+			info!("successfully set playlist upstream to {youtube_upstream_playlist}");
 		}
 		Command::Sync { options } => {
 			let mut playlist = Playlist::from_path(options.playlist_db_path)
@@ -436,7 +458,7 @@ async fn main() {
 				.sync_from_youtube()
 				.await
 				.expect("failed syncing from youtube");
-			println!("successfully synced from youtube");
+			info!("successfully synced from youtube");
 		}
 		Command::WriteToM3a { options } => {
 			let playlist = Playlist::from_path(options.playlist_db_path)
@@ -446,7 +468,7 @@ async fn main() {
 			playlist
 				.write_playlist_to_m3a()
 				.expect("failed writing playlist to m3a");
-			println!("successfully wrote playlist m3a");
+			info!("successfully wrote playlist m3a");
 		}
 	};
 }
