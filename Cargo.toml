@@ -8,6 +8,8 @@ clap = { version = "4.6.5", features = ["derive"] }
 # serde         = "1.0"
 # serde_yaml_ng = "0.10"
 kopuz-server = { git = "https://github.com/techs-sus/kopuz" }
+kopuz-reader = { git = "https://github.com/techs-sus/kopuz" }
+lofty        = "0.24.0"
 mime         = "0.3.17"
 mime2ext     = "0.1.54"
 pathdiff     = "0.2.3"

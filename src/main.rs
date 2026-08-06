@@ -1,10 +1,19 @@
+mod error;
+mod metadata;
+
 use std::{
 	collections::HashSet,
-	io::{BufWriter, Write},
+	io::{BufReader, BufWriter, Write},
 	path::{Path, PathBuf},
+	process::Stdio,
 };
 
 use clap::Parser;
+use error::Error;
+use lofty::{
+	file::TaggedFileExt,
+	tag::{Accessor, TagExt},
+};
 use reqwest::{
 	Client,
 	header::{CONTENT_TYPE, RANGE, REFERER, USER_AGENT},
@@ -12,33 +21,6 @@ use reqwest::{
 use rusqlite::Connection;
 use server::ytmusic::YouTubeMusicClient;
 use tracing::info;
-
-#[derive(thiserror::Error, Debug)]
-enum Error {
-	#[error("sqlite error: {0}")]
-	Sqlite(#[from] rusqlite::Error),
-
-	#[error("reqwest error: {0}")]
-	Reqwest(#[from] reqwest::Error),
-
-	#[error("tokio io error: {0}")]
-	Io(#[from] tokio::io::Error),
-
-	#[error("sqlite schema.application_id != MAGIC, close error: {0:?}")]
-	NotOurMusicDatabase(Option<rusqlite::Error>),
-
-	#[error("there is no upstream playlist for this playlist")]
-	NoUpstreamPlaylist,
-
-	#[error("the playlist has no parent folder for its tracks and thumbnails")]
-	PlaylistHasNoParentFolder,
-
-	#[error("failed getting playlist entries from kopuz: {0}")]
-	UpstreamGettingPlaylistEntries(String),
-
-	#[error("failed getting a track's stream info from kopuz: {0}")]
-	UpstreamGettingStreamInfo(String),
-}
 
 /// https://sqlite.org/pragma.html#pragma_application_id
 pub const SQLITE_APPLICATION_ID: u32 = 0x7D8A4B83;
@@ -154,7 +136,7 @@ impl Playlist {
 	async fn download_thumbnail(
 		&self,
 		video_id: &str,
-		cover_url: Option<String>,
+		cover_url: Option<&str>,
 		user_agent: String,
 	) -> Result<Option<PathBuf>, Error> {
 		let Some(cover_url) = cover_url else {
@@ -195,7 +177,7 @@ impl Playlist {
 	}
 
 	/// Downloads the track and gives back the audio_base_path with the proper extension and the user
-	/// agent used to download it.
+	/// agent used to download it. The audio path returned will always be an m4a file.
 	#[tracing::instrument(skip(self))]
 	async fn download_single_track(&self, video_id: &str) -> Result<(PathBuf, String), Error> {
 		let stream_info = self
@@ -234,7 +216,11 @@ impl Playlist {
 			}
 		};
 
-		Ok((audio_path, stream_info.user_agent))
+		let taggable_audio_path = metadata::ensure_audio_is_taggable(&audio_path).await?;
+
+		tokio::fs::remove_file(&audio_path).await?;
+
+		Ok((taggable_audio_path, stream_info.user_agent))
 	}
 
 	/// Sync from YouTube Music.
@@ -321,23 +307,36 @@ impl Playlist {
 				self.download_single_track(&*youtube_video_id).await?;
 
 			let thumbnail_path = self
-				.download_thumbnail(&*youtube_video_id, track.cover, user_agent)
+				.download_thumbnail(
+					&*youtube_video_id,
+					track.cover.as_ref().map(String::as_str),
+					user_agent,
+				)
 				.await
 				.unwrap_or(None);
 
-			// all database paths must be relative for portability
-			let resulting_audio_path = pathdiff::diff_paths(resulting_audio_path, &self.folder).unwrap();
-			let thumbnail_path = thumbnail_path
-				.map(|path| pathdiff::diff_paths(path, &self.folder))
-				.unwrap();
+			{
+				// all database paths must be relative for portability
+				let resulting_audio_path =
+					pathdiff::diff_paths(&resulting_audio_path, &self.folder).unwrap();
+				let thumbnail_path = thumbnail_path
+					.as_ref()
+					.map(|path| pathdiff::diff_paths(path, &self.folder));
 
-			insert_track_statement.execute((
-				track.title,
-				resulting_audio_path.to_string_lossy().to_string(),
-				thumbnail_path.map(|path| path.to_string_lossy().to_string()),
-				playlist_ordered_position,
-				youtube_video_id,
-			))?;
+				insert_track_statement.execute((
+					&track.title,
+					resulting_audio_path.to_string_lossy().to_string(),
+					thumbnail_path.as_ref().and_then(|maybe_path| {
+						maybe_path
+							.as_ref()
+							.map(|path| path.to_string_lossy().to_string())
+					}),
+					playlist_ordered_position,
+					youtube_video_id,
+				))?;
+			}
+
+			metadata::tag(&track, resulting_audio_path, thumbnail_path)?;
 		}
 
 		Ok(())

@@ -3021,7 +3021,9 @@ name = "music-player"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "kopuz-reader",
  "kopuz-server",
+ "lofty",
  "mime",
  "mime2ext",
  "pathdiff",

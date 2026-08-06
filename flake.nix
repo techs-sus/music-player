@@ -33,16 +33,18 @@
 
           nativeBuildInputs = with pkgs; [
             pkg-config
-            fontconfig
+            # fontconfig
             makeWrapper
           ];
 
           buildInputs = with pkgs; [
-            libxcb
-            libxkbcommon
-            wayland
-            vulkan-loader
+            # libxcb
+            # libxkbcommon
+            # wayland
+            # vulkan-loader
             openssl
+            ffmpeg-headless
+            libclang
           ];
         };
 
@@ -94,6 +96,7 @@
 
           packages = with pkgs; [
             rust-analyzer
+            libclang
           ];
 
           shellHook = ''
