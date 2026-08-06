@@ -3,17 +3,12 @@ mod metadata;
 
 use std::{
 	collections::HashSet,
-	io::{BufReader, BufWriter, Write},
+	io::{BufWriter, Write},
 	path::{Path, PathBuf},
-	process::Stdio,
 };
 
 use clap::Parser;
 use error::Error;
-use lofty::{
-	file::TaggedFileExt,
-	tag::{Accessor, TagExt},
-};
 use reqwest::{
 	Client,
 	header::{CONTENT_TYPE, RANGE, REFERER, USER_AGENT},
@@ -336,7 +331,7 @@ impl Playlist {
 				))?;
 			}
 
-			metadata::tag(&track, resulting_audio_path, thumbnail_path)?;
+			metadata::tag(track, resulting_audio_path, thumbnail_path)?;
 		}
 
 		Ok(())

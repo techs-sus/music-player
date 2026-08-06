@@ -33,7 +33,7 @@ pub async fn ensure_audio_is_taggable<P: AsRef<Path>>(input_file: P) -> Result<P
 
 /// Embeds title, artist, album and optionally thumbnail metadata into the audio file at `audio_path`.
 pub fn tag<P: AsRef<Path>>(
-	track: &Track,
+	track: Track,
 	audio_path: P,
 	thumbnail_path: Option<P>,
 ) -> Result<(), Error> {
