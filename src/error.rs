@@ -1,7 +1,10 @@
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-	#[error("sqlite error: {0}")]
-	Sqlite(#[from] rusqlite::Error),
+	#[error("sqlx sqlite error: {0}")]
+	SqlxSqlite(#[from] sqlx::Error),
+
+	#[error("sqlx sqlite migration error: {0}")]
+	SqlxMigrationSqlite(#[from] sqlx::migrate::MigrateError),
 
 	#[error("reqwest error: {0}")]
 	Reqwest(#[from] reqwest::Error),
@@ -12,8 +15,8 @@ pub enum Error {
 	#[error("lofty error: {0}")]
 	Lofty(#[from] lofty::error::LoftyError),
 
-	#[error("sqlite schema.application_id != MAGIC, close error: {0:?}")]
-	NotOurMusicDatabase(Option<rusqlite::Error>),
+	#[error("sqlite schema.application_id != MAGIC")]
+	NotOurMusicDatabase,
 
 	#[error("there is no upstream playlist for this playlist")]
 	NoUpstreamPlaylist,

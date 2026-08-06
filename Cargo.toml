@@ -5,18 +5,14 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.6.5", features = ["derive"] }
-# serde         = "1.0"
-# serde_yaml_ng = "0.10"
 kopuz-server = { git = "https://github.com/techs-sus/kopuz" }
 kopuz-reader = { git = "https://github.com/techs-sus/kopuz" }
-lofty        = "0.24.0"
-mime         = "0.3.17"
-mime2ext     = "0.1.54"
-pathdiff     = "0.2.3"
-reqwest      = "0.13.4"
-rusqlite     = "0.31"
-thiserror    = "2.0.19"
-
+lofty = "0.24.0"
+mime2ext = "0.1.54"
+pathdiff = "0.2.3"
+reqwest = "0.13.4"
+thiserror = "2.0.19"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls"] }
 tokio = { version = "1.53.1", default-features = false, features = [
 	"rt",
 	"rt-multi-thread",

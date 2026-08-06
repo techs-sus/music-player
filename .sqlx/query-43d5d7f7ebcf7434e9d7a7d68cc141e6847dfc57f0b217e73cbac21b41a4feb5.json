@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "CREATE TEMP TABLE IF NOT EXISTS incoming_tracks(\n\t\t\t\tyoutube_video_id text NOT NULL PRIMARY KEY\n\t\t\t);",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "43d5d7f7ebcf7434e9d7a7d68cc141e6847dfc57f0b217e73cbac21b41a4feb5"
+}

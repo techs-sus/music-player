@@ -99,6 +99,8 @@
             libclang
           ];
 
+          DATABASE_URL = "sqlite://dev.db";
+
           shellHook = ''
             export LD_LIBRARY_PATH="${ldLibraryPath}:$LD_LIBRARY_PATH"
           '';

@@ -1,0 +1,178 @@
+use std::{collections::HashSet, io::Write, path::Path};
+
+use crate::error::Error;
+use reader::Track;
+use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
+
+/// https://sqlite.org/pragma.html#pragma_application_id
+pub const SQLITE_APPLICATION_ID: i32 = 0x7D8A4B83;
+
+pub struct Database {
+	pool: SqlitePool,
+}
+
+impl Database {
+	pub async fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+		let pool = SqlitePool::connect_with(
+			SqliteConnectOptions::new()
+				.filename(path.as_ref())
+				.create_if_missing(true),
+		)
+		.await?;
+
+		let pragmas = sqlx::query!("PRAGMA application_id;")
+			.fetch_one(&pool)
+			.await?;
+
+		let application_id = pragmas.application_id.unwrap_or(0);
+
+		// "set the 32-bit signed big-endian" (https://sqlite.org/pragma.html#pragma_application_id)
+		match application_id as i32 {
+			0 => {
+				// mark the database as ours
+				// cannot be statically done at compile time because sqlx doesn't support pragmas properly
+				sqlx::query(&format!("PRAGMA application_id = {SQLITE_APPLICATION_ID}"))
+					.execute(&pool)
+					.await?;
+
+				sqlx::migrate!("./migrations")
+					.run(&mut pool.acquire().await?)
+					.await?;
+			}
+
+			SQLITE_APPLICATION_ID => {
+				// no migrations, so don't do anything
+			}
+
+			// another application set a unique application_id, close and error so we don't nuke any data
+			_ => {
+				pool.close().await;
+
+				return Err(Error::NotOurMusicDatabase);
+			}
+		}
+
+		Ok(Self { pool })
+	}
+
+	pub async fn write_m3a_playlist(&self, writer: &mut impl Write) -> Result<(), Error> {
+		let tracks = sqlx::query!("SELECT audio_path, title FROM tracks ORDER BY position ASC")
+			.fetch_all(&self.pool)
+			.await?;
+
+		write!(writer, "#EXTM3U\n")?;
+
+		for track in tracks.into_iter() {
+			write!(writer, "#EXTINF:0,{}\n", track.title)?;
+			// this should work because db should only store relative paths
+			write!(writer, "{}\n", track.audio_path)?;
+		}
+
+		writer.flush()?;
+
+		Ok(())
+	}
+
+	pub async fn set_upstream(&self, upstream_id: &str) -> Result<(), sqlx::Error> {
+		sqlx::query!(
+			"INSERT INTO playlist_metadata (singleton_key, youtube_playlist_id) VALUES (1, ?1) ON CONFLICT(singleton_key) DO UPDATE SET youtube_playlist_id = excluded.youtube_playlist_id",
+			upstream_id
+		).execute(&self.pool).await?;
+
+		Ok(())
+	}
+
+	pub async fn get_upstream(&self) -> Result<String, sqlx::Error> {
+		Ok(
+			sqlx::query!("SELECT youtube_playlist_id as \"youtube_playlist_id!\" from playlist_metadata")
+				.fetch_one(&self.pool)
+				.await?
+				.youtube_playlist_id,
+		)
+	}
+
+	/// Returns a [`HashSet`] of the already existing tracks in the database.
+	pub async fn diff_existing_tracks(
+		&self,
+		tracks: &[Track],
+	) -> Result<HashSet<String>, sqlx::Error> {
+		// acquire a connection from the pool
+		// must use a transaction because temp table is per connection not per database
+		let mut tx = self.pool.begin().await?;
+
+		sqlx::query(
+			"CREATE TEMP TABLE IF NOT EXISTS incoming_tracks(
+				youtube_video_id text NOT NULL PRIMARY KEY
+			);",
+		)
+		.execute(&mut *tx)
+		.await?;
+
+		for track in tracks {
+			// sqlx has an automatic prepare cache, so no need to prepare here
+			sqlx::query("INSERT OR IGNORE INTO incoming_tracks (youtube_video_id) VALUES (?1)")
+				.bind(track.id.key())
+				.execute(&mut *tx)
+				.await?;
+		}
+
+		let already_existing_track_ids = sqlx::query(
+			"SELECT s.youtube_video_id
+				FROM tracks s
+				JOIN incoming_tracks t ON t.youtube_video_id = s.youtube_video_id;
+			",
+		)
+		.fetch_all(&mut *tx)
+		.await?
+		.into_iter()
+		.map(|row| row.get::<String, _>(0))
+		.collect::<HashSet<_>>();
+
+		// clean temporary table to increase performance
+		sqlx::query("DELETE FROM incoming_tracks;")
+			.execute(&mut *tx)
+			.await?;
+
+		tx.commit().await?;
+
+		Ok(already_existing_track_ids)
+	}
+
+	pub async fn insert_or_update_track(
+		&self,
+		title: &str,
+		audio_path: &str,
+		thumbnail_path: Option<&str>,
+		position: i64,
+		youtube_video_id: &str,
+	) -> Result<(), sqlx::Error> {
+		sqlx::query!(
+			"
+			INSERT INTO tracks (title, audio_path, thumbnail_path, position, youtube_video_id) VALUES (?1, ?2, ?3, ?4, ?5)
+			ON CONFLICT (youtube_video_id) DO UPDATE SET
+				title = excluded.title,
+				audio_path = excluded.audio_path,
+				thumbnail_path = excluded.thumbnail_path,
+				position = excluded.position
+			", title, audio_path, thumbnail_path, position, youtube_video_id
+		).execute(&self.pool).await?;
+
+		Ok(())
+	}
+
+	pub async fn update_track_position(
+		&self,
+		position: i64,
+		youtube_video_id: &str,
+	) -> Result<(), sqlx::Error> {
+		sqlx::query!(
+			"UPDATE tracks SET position = ?1 WHERE youtube_video_id = ?2",
+			position,
+			youtube_video_id
+		)
+		.execute(&self.pool)
+		.await?;
+
+		Ok(())
+	}
+}

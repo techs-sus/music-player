@@ -1,9 +1,9 @@
+mod database;
 mod error;
 mod metadata;
 
 use std::{
-	collections::HashSet,
-	io::{BufWriter, Write},
+	io::BufWriter,
 	path::{Path, PathBuf},
 };
 
@@ -11,11 +11,12 @@ use clap::Parser;
 use error::Error;
 use reqwest::{
 	Client,
-	header::{CONTENT_TYPE, RANGE, REFERER, USER_AGENT},
+	header::{CONTENT_TYPE, ORIGIN, RANGE, REFERER, USER_AGENT},
 };
-use rusqlite::Connection;
 use server::ytmusic::YouTubeMusicClient;
 use tracing::info;
+
+use crate::database::Database;
 
 /// https://sqlite.org/pragma.html#pragma_application_id
 pub const SQLITE_APPLICATION_ID: u32 = 0x7D8A4B83;
@@ -28,7 +29,7 @@ pub const SQLITE_APPLICATION_ID: u32 = 0x7D8A4B83;
 struct Playlist {
 	name: String,
 	folder: PathBuf,
-	db: Connection,
+	database: Database,
 	client: YouTubeMusicClient,
 	reqwest_client: reqwest::Client,
 }
@@ -44,75 +45,8 @@ impl Playlist {
 		let _ = tokio::fs::create_dir(folder.join("audio")).await;
 		let _ = tokio::fs::create_dir(folder.join("thumbnail")).await;
 
-		let db = Connection::open(&path)?;
-
-		// https://sqlite.org/pragma.html#pragma_application_id
-		let application_id = db.pragma_query_value(
-			Some(rusqlite::DatabaseName::Main),
-			"application_id",
-			|row| row.get::<_, u32>(0),
-		)?;
-
-		match application_id {
-			0 => {
-				// mark the database as ours
-				db.pragma_update(
-					Some(rusqlite::DatabaseName::Main),
-					"application_id",
-					SQLITE_APPLICATION_ID,
-				)?;
-
-				// first version = 0
-				db.pragma_update(Some(rusqlite::DatabaseName::Main), "user_version", 0)?;
-
-				// everything in schema version 0
-				db.execute_batch(
-					"
-    				BEGIN;
-    				CREATE TABLE IF NOT EXISTS playlist_metadata(
-               singleton_key integer primary key check (singleton_key = 1),
-
-               youtube_playlist_id text
-            );	
-    				CREATE TABLE IF NOT EXISTS tracks(
-   				    id integer PRIMARY KEY,
-    					title text NOT NULL,
-
-              audio_path text NOT NULL,
-              thumbnail_path text,
-
-              youtube_video_id text NOT NULL UNIQUE,
-							position integer NOT NULL UNIQUE
-    				);
-    				COMMIT;
-				",
-				)?;
-			}
-
-			SQLITE_APPLICATION_ID => {
-				// no migrations, so don't do anything
-			}
-
-			// another application set a unique application_id, close and error so we don't nuke any data
-			_ => {
-				// close and throw the error, too much work to close over and over again
-				// to be safe we could open as read only, do all checks etc, then reopen as read+write
-				db.close()
-					.map_err(|(_, e)| Error::NotOurMusicDatabase(Some(e)))?;
-
-				return Err(Error::NotOurMusicDatabase(None));
-			}
-		}
-
-		db.execute(
-			"CREATE TEMP TABLE IF NOT EXISTS incoming_tracks(
-				youtube_video_id text NOT NULL PRIMARY KEY
-			);",
-			(),
-		)?;
-
 		Ok(Self {
-			db,
+			database: Database::open(path.as_ref()).await?,
 			folder,
 			client: YouTubeMusicClient::new(),
 			reqwest_client: Client::new(),
@@ -197,6 +131,7 @@ impl Playlist {
 					.get(&stream_info.url)
 					.header(USER_AGENT, &stream_info.user_agent)
 					.header(REFERER, "https://music.youtube.com/")
+					.header(ORIGIN, "https://music.youtube.com")
 					// this header is REQUIRED for near instant downloads
 					.header(RANGE, "bytes=0-")
 					.send()
@@ -222,16 +157,13 @@ impl Playlist {
 	///
 	/// # Errors
 	/// - [`Error::NoUpstreamPlaylist`] if the playlist has no upstream target to sync from.
-	/// - [`Error::UpstreamFailedGettingPlaylistEntries`]
-	async fn sync_from_youtube(&mut self) -> Result<(), Error> {
-		let Some(playlist_id) = self.db.query_row(
-			"SELECT youtube_playlist_id from playlist_metadata",
-			[],
-			|row| row.get::<_, Option<String>>(0),
-		)?
-		else {
-			return Err(Error::NoUpstreamPlaylist);
-		};
+	/// - [`Error::UpstreamGettingPlaylistEntries`]
+	async fn sync_from_youtube(&self) -> Result<(), Error> {
+		let playlist_id = self
+			.database
+			.get_upstream()
+			.await
+			.map_err(|_| Error::NoUpstreamPlaylist)?;
 
 		let tracks = self
 			.client
@@ -239,62 +171,33 @@ impl Playlist {
 			.await
 			.map_err(Error::UpstreamGettingPlaylistEntries)?;
 
-		// put all incoming ids into incoming_tracks
-		{
-			let tx = self.db.transaction()?;
-			let mut prepared =
-				tx.prepare("INSERT OR IGNORE INTO incoming_tracks (youtube_video_id) VALUES (?1)")?;
-
-			for track in &tracks {
-				prepared.execute([track.id.key()])?;
-			}
-
-			drop(prepared);
-			tx.commit()?;
-		}
-
-		let already_existing_track_ids = self
-			.db
-			.prepare(
-				"SELECT s.youtube_video_id
-				FROM tracks s
-				JOIN incoming_tracks t ON t.youtube_video_id = s.youtube_video_id;
-			",
-			)?
-			.query_map((), |row| row.get::<_, String>(0))?
-			.filter_map(Result::ok)
-			.collect::<HashSet<_>>();
-
-		// clean temporary table to increase performance
-		self.db.execute("DELETE FROM incoming_tracks;", [])?;
-
-		let mut insert_track_statement = self.db.prepare(
-			"
-			INSERT INTO tracks (title, audio_path, thumbnail_path, position, youtube_video_id) VALUES (?1, ?2, ?3, ?4, ?5)
-			ON CONFLICT (youtube_video_id) DO UPDATE SET
-				title = excluded.title,
-				audio_path = excluded.audio_path,
-				thumbnail_path = excluded.thumbnail_path;
-				position = excluded.position;
-			",
-		)?;
-
-		let mut ensure_track_has_updated_position = self
-			.db
-			.prepare("UPDATE tracks SET position = ?1 WHERE youtube_video_id = ?2")?;
+		let already_existing_track_ids = self.database.diff_existing_tracks(&tracks).await?;
 
 		for (playlist_ordered_position, track) in tracks.into_iter().enumerate() {
+			// usize -> i64 is usually non overflowing for music playlists
+			let playlist_ordered_position = playlist_ordered_position as i64;
 			let youtube_video_id = track.id.key();
 
-			if already_existing_track_ids.contains(&*youtube_video_id) {
+			if already_existing_track_ids.contains(&*youtube_video_id)
+				&& let Ok(true) = tokio::fs::try_exists(
+					self
+						.folder
+						.join("audio")
+						.join(&*youtube_video_id)
+						.with_extension("m4a"),
+				)
+				.await
+			{
 				// update track position as it may have changed in the upstream
 				info!(
 					"track id {} already exists, not fetching from youtube",
 					&youtube_video_id
 				);
 
-				ensure_track_has_updated_position
-					.execute((playlist_ordered_position, &youtube_video_id))?;
+				self
+					.database
+					.update_track_position(playlist_ordered_position, &youtube_video_id)
+					.await?;
 				continue;
 			}
 
@@ -318,17 +221,19 @@ impl Playlist {
 					.as_ref()
 					.map(|path| pathdiff::diff_paths(path, &self.folder));
 
-				insert_track_statement.execute((
-					&track.title,
-					resulting_audio_path.to_string_lossy().to_string(),
-					thumbnail_path.as_ref().and_then(|maybe_path| {
-						maybe_path
+				self
+					.database
+					.insert_or_update_track(
+						&track.title,
+						&*resulting_audio_path.to_string_lossy(),
+						thumbnail_path
 							.as_ref()
-							.map(|path| path.to_string_lossy().to_string())
-					}),
-					playlist_ordered_position,
-					youtube_video_id,
-				))?;
+							.and_then(|maybe_path| maybe_path.as_ref().map(|path| path.to_string_lossy()))
+							.as_deref(),
+						playlist_ordered_position,
+						&*youtube_video_id,
+					)
+					.await?;
 			}
 
 			metadata::tag(track, resulting_audio_path, thumbnail_path)?;
@@ -337,46 +242,18 @@ impl Playlist {
 		Ok(())
 	}
 
-	fn write_playlist_to_m3a(&self) -> Result<(), Error> {
-		struct RegularTrack {
-			path: String,
-			title: String,
-		}
-
-		let mut prepared = self
-			.db
-			.prepare("SELECT audio_path, title FROM tracks ORDER BY position ASC")?;
-
-		let tracks = prepared.query_map((), |row| {
-			Ok(RegularTrack {
-				path: row.get::<_, String>(0)?,
-				title: row.get::<_, String>(1)?,
-			})
-		})?;
-
+	async fn write_playlist_to_m3a(&self) -> Result<(), Error> {
 		let mut buf = BufWriter::new(std::fs::File::create(
 			self.folder.join(&self.name).with_extension("m3a"),
 		)?);
 
-		write!(buf, "#EXTM3U\n")?;
-
-		for track in tracks.into_iter().filter_map(Result::ok) {
-			write!(buf, "#EXTINF:0,{}\n", track.title)?;
-			// this should work because db should only store relative paths
-			write!(buf, "{}\n", track.path)?;
-		}
-
-		buf.flush()?;
+		self.database.write_m3a_playlist(&mut buf).await?;
 
 		Ok(())
 	}
 
-	fn set_upstream(&self, youtube_playlist_id: &str) -> Result<(), Error> {
-		self.db.execute(
-			"INSERT INTO playlist_metadata (singleton_key, youtube_playlist_id) VALUES (1, ?1) ON CONFLICT(singleton_key) DO UPDATE SET youtube_playlist_id = excluded.youtube_playlist_id",
-			[youtube_playlist_id],
-		)?;
-
+	async fn set_upstream(&self, youtube_playlist_id: &str) -> Result<(), Error> {
+		self.database.set_upstream(youtube_playlist_id).await?;
 		Ok(())
 	}
 }
@@ -392,12 +269,12 @@ struct PlaylistOptions {
 enum Command {
 	/// Initializes a playlist file.
 	Init {
-		#[clap(flatten)]
-		options: PlaylistOptions,
-
 		/// The upstream playlist to init this local one.
 		#[arg(short = 'u', long = "upstream")]
 		youtube_upstream_playlist: String,
+
+		#[clap(flatten)]
+		options: PlaylistOptions,
 	},
 
 	/// Syncs music from a playlist file and produces an m3u8 file.
@@ -420,7 +297,7 @@ struct Args {
 	command: Command,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() {
 	tracing_subscriber::fmt()
 		.compact()
@@ -428,40 +305,42 @@ async fn main() {
 		.without_time()
 		.with_level(true)
 		.init();
+
 	let args = Args::parse();
+
+	let playlist_options = match &args.command {
+		Command::Init { options, .. } | Command::Sync { options } | Command::WriteToM3a { options } => {
+			options
+		}
+	};
+
+	let playlist = Playlist::from_path(&*playlist_options.playlist_db_path)
+		.await
+		.expect("failed opening playlist");
+
 	match args.command {
 		Command::Init {
-			options,
 			youtube_upstream_playlist,
+			..
 		} => {
-			let playlist = Playlist::from_path(options.playlist_db_path)
-				.await
-				.expect("failed opening playlist");
-
 			playlist
 				.set_upstream(&youtube_upstream_playlist)
+				.await
 				.expect("failed setting playlist upstream");
 
 			info!("successfully set playlist upstream to {youtube_upstream_playlist}");
 		}
-		Command::Sync { options } => {
-			let mut playlist = Playlist::from_path(options.playlist_db_path)
-				.await
-				.expect("failed opening playlist");
-
+		Command::Sync { .. } => {
 			playlist
 				.sync_from_youtube()
 				.await
 				.expect("failed syncing from youtube");
 			info!("successfully synced from youtube");
 		}
-		Command::WriteToM3a { options } => {
-			let playlist = Playlist::from_path(options.playlist_db_path)
-				.await
-				.expect("failed opening playlist");
-
+		Command::WriteToM3a { .. } => {
 			playlist
 				.write_playlist_to_m3a()
+				.await
 				.expect("failed writing playlist to m3a");
 			info!("successfully wrote playlist m3a");
 		}
