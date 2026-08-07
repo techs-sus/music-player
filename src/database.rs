@@ -160,6 +160,7 @@ impl Database {
 		Ok(())
 	}
 
+	#[tracing::instrument(skip(self))]
 	pub async fn update_track_position(
 		&self,
 		position: i64,

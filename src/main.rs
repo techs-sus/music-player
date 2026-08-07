@@ -3,12 +3,15 @@ mod error;
 mod metadata;
 
 use std::{
+	collections::HashSet,
 	io::BufWriter,
 	path::{Path, PathBuf},
 };
 
 use clap::Parser;
 use error::Error;
+use futures::StreamExt;
+use reader::Track;
 use reqwest::{
 	Client,
 	header::{CONTENT_TYPE, ORIGIN, RANGE, REFERER, USER_AGENT},
@@ -153,6 +156,79 @@ impl Playlist {
 		Ok((taggable_audio_path, stream_info.user_agent))
 	}
 
+	async fn sync_from_youtube_single_track(
+		&self,
+		playlist_ordered_position: i64,
+		track: Track,
+		already_existing_track_ids: &HashSet<String>,
+	) -> Result<(), Error> {
+		// let playlist_ordered_position = playlist_ordered_position as i64;
+		let youtube_video_id = track.id.key();
+
+		if already_existing_track_ids.contains(&*youtube_video_id)
+			&& let Ok(true) = tokio::fs::try_exists(
+				self
+					.folder
+					.join("audio")
+					.join(&*youtube_video_id)
+					.with_extension("m4a"),
+			)
+			.await
+		{
+			// update track position as it may have changed in the upstream
+			info!(
+				"track id {} already exists, not fetching from youtube",
+				&youtube_video_id
+			);
+
+			self
+				.database
+				.update_track_position(playlist_ordered_position, &youtube_video_id)
+				.await?;
+
+			return Ok(());
+		}
+
+		info!("downloading {youtube_video_id:?}");
+
+		let (resulting_audio_path, user_agent) = self.download_single_track(&youtube_video_id).await?;
+
+		let thumbnail_path = self
+			.download_thumbnail(
+				&youtube_video_id,
+				track.cover.as_ref().map(String::as_str),
+				user_agent,
+			)
+			.await
+			.unwrap_or(None);
+
+		{
+			// all database paths must be relative for portability
+			let resulting_audio_path = pathdiff::diff_paths(&resulting_audio_path, &self.folder).unwrap();
+			let thumbnail_path = thumbnail_path
+				.as_ref()
+				.map(|path| pathdiff::diff_paths(path, &self.folder));
+
+			self
+				.database
+				.insert_or_update_track(
+					&track.title,
+					&*resulting_audio_path.to_string_lossy(),
+					thumbnail_path
+						.as_ref()
+						.and_then(|maybe_path| maybe_path.as_ref().map(|path| path.to_string_lossy()))
+						.as_deref(),
+					playlist_ordered_position,
+					&*youtube_video_id,
+				)
+				.await?;
+		}
+
+		metadata::tag(track, resulting_audio_path, thumbnail_path)?;
+
+		Ok(())
+	}
+
 	/// Sync from YouTube Music.
 	///
 	/// # Errors
@@ -173,70 +249,24 @@ impl Playlist {
 
 		let already_existing_track_ids = self.database.diff_existing_tracks(&tracks).await?;
 
-		for (playlist_ordered_position, track) in tracks.into_iter().enumerate() {
-			// usize -> i64 is usually non overflowing for music playlists
-			let playlist_ordered_position = playlist_ordered_position as i64;
-			let youtube_video_id = track.id.key();
-
-			if already_existing_track_ids.contains(&*youtube_video_id)
-				&& let Ok(true) = tokio::fs::try_exists(
-					self
-						.folder
-						.join("audio")
-						.join(&*youtube_video_id)
-						.with_extension("m4a"),
+		for res in futures::stream::iter(tracks.into_iter().enumerate().map(
+			|(playlist_ordered_position, track)| {
+				self.sync_from_youtube_single_track(
+					// usize -> i64 is usually non overflowing for music playlists
+					playlist_ordered_position as i64,
+					track,
+					&already_existing_track_ids,
 				)
-				.await
-			{
-				// update track position as it may have changed in the upstream
-				info!(
-					"track id {} already exists, not fetching from youtube",
-					&youtube_video_id
-				);
-
-				self
-					.database
-					.update_track_position(playlist_ordered_position, &youtube_video_id)
-					.await?;
-				continue;
+			},
+		))
+		.buffer_unordered(16)
+		.collect::<Vec<_>>()
+		.await
+		{
+			match res {
+				Ok(..) => {}
+				Err(e) => tracing::error!("got error in join_all: {e:?}"),
 			}
-
-			let (resulting_audio_path, user_agent) =
-				self.download_single_track(&*youtube_video_id).await?;
-
-			let thumbnail_path = self
-				.download_thumbnail(
-					&*youtube_video_id,
-					track.cover.as_ref().map(String::as_str),
-					user_agent,
-				)
-				.await
-				.unwrap_or(None);
-
-			{
-				// all database paths must be relative for portability
-				let resulting_audio_path =
-					pathdiff::diff_paths(&resulting_audio_path, &self.folder).unwrap();
-				let thumbnail_path = thumbnail_path
-					.as_ref()
-					.map(|path| pathdiff::diff_paths(path, &self.folder));
-
-				self
-					.database
-					.insert_or_update_track(
-						&track.title,
-						&*resulting_audio_path.to_string_lossy(),
-						thumbnail_path
-							.as_ref()
-							.and_then(|maybe_path| maybe_path.as_ref().map(|path| path.to_string_lossy()))
-							.as_deref(),
-						playlist_ordered_position,
-						&*youtube_video_id,
-					)
-					.await?;
-			}
-
-			metadata::tag(track, resulting_audio_path, thumbnail_path)?;
 		}
 
 		Ok(())

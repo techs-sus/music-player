@@ -4,12 +4,11 @@ CREATE TABLE IF NOT EXISTS playlist_metadata(
 );
 
 CREATE TABLE IF NOT EXISTS tracks(
-	id integer PRIMARY KEY,
+  youtube_video_id text PRIMARY KEY,
 	title text NOT NULL,
 
   audio_path text NOT NULL,
   thumbnail_path text,
 
-  youtube_video_id text NOT NULL UNIQUE,
 	position integer NOT NULL UNIQUE
 );
