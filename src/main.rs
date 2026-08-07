@@ -17,7 +17,7 @@ use reqwest::{
 	header::{CONTENT_TYPE, ORIGIN, RANGE, REFERER, USER_AGENT},
 };
 use server::ytmusic::YouTubeMusicClient;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::database::Database;
 
@@ -249,6 +249,9 @@ impl Playlist {
 
 		let already_existing_track_ids = self.database.diff_existing_tracks(&tracks).await?;
 
+		let mut successes: usize = 0;
+		let mut failures: usize = 0;
+
 		for res in futures::stream::iter(tracks.into_iter().enumerate().map(
 			|(playlist_ordered_position, track)| {
 				self.sync_from_youtube_single_track(
@@ -264,10 +267,18 @@ impl Playlist {
 		.await
 		{
 			match res {
-				Ok(..) => {}
-				Err(e) => tracing::error!("got error in join_all: {e:?}"),
+				Ok(..) => {
+					successes += 1;
+				}
+				Err(e) => {
+					failures += 1;
+					tracing::error!("got error in join_all: {e:?}")
+				}
 			}
 		}
+
+		info!("successfully synced {successes} tracks from youtube");
+		warn!("failed syncing {failures} tracks from youtube");
 
 		Ok(())
 	}
