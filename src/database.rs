@@ -2,7 +2,7 @@ use std::{collections::HashSet, io::Write, path::Path};
 
 use crate::error::Error;
 use reader::Track;
-use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
+use sqlx::{AssertSqlSafe, Row, SqlitePool, sqlite::SqliteConnectOptions};
 
 /// https://sqlite.org/pragma.html#pragma_application_id
 pub const SQLITE_APPLICATION_ID: i32 = 0x7D8A4B83;
@@ -31,9 +31,13 @@ impl Database {
 			0 => {
 				// mark the database as ours
 				// cannot be statically done at compile time because sqlx doesn't support pragmas properly
-				sqlx::query(&format!("PRAGMA application_id = {SQLITE_APPLICATION_ID}"))
-					.execute(&pool)
-					.await?;
+				// this is safe because SQLITE_APPLICATION_ID is guaranteed to be an integer. and no user
+				// input is involved with this query
+				sqlx::query(AssertSqlSafe(format!(
+					"PRAGMA application_id = {SQLITE_APPLICATION_ID}"
+				)))
+				.execute(&pool)
+				.await?;
 
 				sqlx::migrate!("./migrations")
 					.run(&mut pool.acquire().await?)
