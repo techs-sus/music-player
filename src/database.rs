@@ -1,24 +1,45 @@
 use std::{collections::HashSet, io::Write, path::Path};
 
 use crate::error::Error;
+use clap::value_parser;
 use reader::Track;
-use sqlx::{AssertSqlSafe, Row, SqlitePool, sqlite::SqliteConnectOptions};
+use sqlx::{
+	AssertSqlSafe, Row, SqlitePool,
+	sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+};
 
 /// https://sqlite.org/pragma.html#pragma_application_id
 pub const SQLITE_APPLICATION_ID: i32 = 0x7D8A4B83;
+
+#[derive(clap::Args, Clone)]
+pub struct PoolConcurrencyOptions {
+	/// How many database connections are guaranteed to exist at any time.
+	#[clap(long = "pool_min_connections", default_value_t = 8, value_parser = value_parser!(u32).range(1..))]
+	min_connections: u32,
+
+	/// How many database connections may be reached if database load is high.
+	#[clap(long = "pool_max_connections", default_value_t = 16, value_parser = value_parser!(u32).range(1..))]
+	max_connections: u32,
+}
 
 pub struct Database {
 	pool: SqlitePool,
 }
 
 impl Database {
-	pub async fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-		let pool = SqlitePool::connect_with(
-			SqliteConnectOptions::new()
-				.filename(path.as_ref())
-				.create_if_missing(true),
-		)
-		.await?;
+	pub async fn open<P: AsRef<Path>>(
+		path: P,
+		pool_concurrency_options: &PoolConcurrencyOptions,
+	) -> Result<Self, Error> {
+		let pool = SqlitePoolOptions::new()
+			.min_connections(pool_concurrency_options.min_connections)
+			.max_connections(pool_concurrency_options.max_connections)
+			.connect_with(
+				SqliteConnectOptions::new()
+					.filename(path.as_ref())
+					.create_if_missing(true),
+			)
+			.await?;
 
 		let pragmas = sqlx::query!("PRAGMA application_id;")
 			.fetch_one(&pool)

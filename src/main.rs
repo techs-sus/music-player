@@ -8,7 +8,7 @@ use std::{
 	path::{Path, PathBuf},
 };
 
-use clap::Parser;
+use clap::{Parser, value_parser};
 use error::Error;
 use futures::StreamExt;
 use reader::Track;
@@ -19,7 +19,7 @@ use reqwest::{
 use server::ytmusic::YouTubeMusicClient;
 use tracing::{info, warn};
 
-use crate::database::Database;
+use crate::database::{Database, PoolConcurrencyOptions};
 
 /// https://sqlite.org/pragma.html#pragma_application_id
 pub const SQLITE_APPLICATION_ID: u32 = 0x7D8A4B83;
@@ -35,10 +35,26 @@ struct Playlist {
 	database: Database,
 	client: YouTubeMusicClient,
 	reqwest_client: reqwest::Client,
+
+	concurrency_options: ConcurrencyOptions,
+}
+
+#[derive(clap::Args, Clone)]
+struct ConcurrencyOptions {
+	/// See [`PoolConcurrencyOptions`].
+	#[clap(flatten)]
+	pool: PoolConcurrencyOptions,
+
+	/// How many futures should be polled at once.
+	#[arg(long = "futures", default_value_t = 32, value_parser = value_parser!(u32).range(1..))]
+	worker_futures: u32,
 }
 
 impl Playlist {
-	async fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+	async fn from_path<P: AsRef<Path>>(
+		path: P,
+		concurrency_options: ConcurrencyOptions,
+	) -> Result<Self, Error> {
 		let Some(folder) = path.as_ref().parent().map(Path::to_path_buf) else {
 			return Err(Error::PlaylistHasNoParentFolder);
 		};
@@ -49,7 +65,7 @@ impl Playlist {
 		let _ = tokio::fs::create_dir(folder.join("thumbnail")).await;
 
 		Ok(Self {
-			database: Database::open(path.as_ref()).await?,
+			database: Database::open(path.as_ref(), &concurrency_options.pool).await?,
 			folder,
 			client: YouTubeMusicClient::new(),
 			reqwest_client: Client::new(),
@@ -60,6 +76,8 @@ impl Playlist {
 				.expect("playlist should have name")
 				.to_string_lossy()
 				.to_string(),
+
+			concurrency_options,
 		})
 	}
 
@@ -262,7 +280,7 @@ impl Playlist {
 				)
 			},
 		))
-		.buffer_unordered(16)
+		.buffer_unordered(self.concurrency_options.worker_futures as usize)
 		.collect::<Vec<_>>()
 		.await
 		{
@@ -316,18 +334,24 @@ enum Command {
 
 		#[clap(flatten)]
 		options: PlaylistOptions,
+		#[clap(flatten)]
+		concurrency_options: ConcurrencyOptions,
 	},
 
 	/// Syncs music from a playlist file and produces an m3u8 file.
 	Sync {
 		#[clap(flatten)]
 		options: PlaylistOptions,
+		#[clap(flatten)]
+		concurrency_options: ConcurrencyOptions,
 	},
 
 	/// Writes a playlist's m3a file.
 	WriteToM3a {
 		#[clap(flatten)]
 		options: PlaylistOptions,
+		#[clap(flatten)]
+		concurrency_options: ConcurrencyOptions,
 	},
 }
 
@@ -349,15 +373,28 @@ async fn main() {
 
 	let args = Args::parse();
 
-	let playlist_options = match &args.command {
-		Command::Init { options, .. } | Command::Sync { options } | Command::WriteToM3a { options } => {
-			options
+	let (playlist_options, concurrency_options) = match &args.command {
+		Command::Init {
+			options,
+			concurrency_options,
+			..
 		}
+		| Command::Sync {
+			options,
+			concurrency_options,
+		}
+		| Command::WriteToM3a {
+			options,
+			concurrency_options,
+		} => (options, concurrency_options),
 	};
 
-	let playlist = Playlist::from_path(&*playlist_options.playlist_db_path)
-		.await
-		.expect("failed opening playlist");
+	let playlist = Playlist::from_path(
+		&*playlist_options.playlist_db_path,
+		concurrency_options.clone(),
+	)
+	.await
+	.expect("failed opening playlist");
 
 	match args.command {
 		Command::Init {
